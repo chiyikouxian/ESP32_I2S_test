@@ -17,5 +17,6 @@
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\ideapad15s\\Desktop\\ESP32_Project\\0_helloworld\\build"
   ],
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "idf.currentSetup": "d:\\ESP-IDF\\Espressif\\frameworks\\esp-idf-v5.1.2"
 }

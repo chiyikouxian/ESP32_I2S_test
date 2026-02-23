@@ -25,15 +25,8 @@ esp_err_t inmp441_init(const inmp441_config_t *config)
 
     /* Check if already initialized */
     if (s_rx_handle != NULL) {
-        ESP_LOGW(TAG, "Already initialized");
         return ESP_ERR_INVALID_STATE;
     }
-
-    ESP_LOGI(TAG, "Initializing INMP441...");
-    ESP_LOGI(TAG, "SCK: GPIO%d, WS: GPIO%d, SD: GPIO%d",
-             config->sck_io, config->ws_io, config->sd_io);
-    ESP_LOGI(TAG, "Sample Rate: %lu Hz, Bits: %d",
-             (unsigned long)config->sample_rate, config->bits);
 
     /* Allocate I2S RX channel */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
@@ -89,32 +82,26 @@ esp_err_t inmp441_init(const inmp441_config_t *config)
         return ret;
     }
 
-    ESP_LOGI(TAG, "INMP441 initialized successfully");
     return ESP_OK;
 }
 
 esp_err_t inmp441_deinit(void)
 {
     if (s_rx_handle == NULL) {
-        ESP_LOGW(TAG, "Not initialized");
         return ESP_ERR_INVALID_STATE;
     }
-
-    ESP_LOGI(TAG, "Deinitializing INMP441...");
 
     /* Disable and delete the channel */
     i2s_channel_disable(s_rx_handle);
     i2s_del_channel(s_rx_handle);
     s_rx_handle = NULL;
 
-    ESP_LOGI(TAG, "INMP441 deinitialized");
     return ESP_OK;
 }
 
 esp_err_t inmp441_read(void *buffer, size_t buffer_size, size_t *bytes_read, uint32_t timeout_ms)
 {
     if (s_rx_handle == NULL) {
-        ESP_LOGE(TAG, "Not initialized");
         return ESP_ERR_INVALID_STATE;
     }
 

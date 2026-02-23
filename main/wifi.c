@@ -31,14 +31,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         if (s_retry_num < WIFI_MAX_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
-            ESP_LOGW(TAG, "Retrying connection... (%d/%d)", s_retry_num, WIFI_MAX_RETRY);
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             ESP_LOGE(TAG, "Failed to connect after %d retries", WIFI_MAX_RETRY);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Connected! IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
@@ -51,7 +48,6 @@ esp_err_t wifi_init_sta(void)
     /* Initialize NVS (required by WiFi driver) */
     ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "Erasing NVS flash...");
         nvs_flash_erase();
         ret = nvs_flash_init();
     }
@@ -91,7 +87,6 @@ esp_err_t wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
 
-    ESP_LOGI(TAG, "Connecting to \"%s\"...", WIFI_SSID);
     ESP_ERROR_CHECK(esp_wifi_start());
 
     /* Wait for connection result */
@@ -100,7 +95,6 @@ esp_err_t wifi_init_sta(void)
                                            pdFALSE, pdFALSE, portMAX_DELAY);
 
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "WiFi connected to \"%s\"", WIFI_SSID);
         return ESP_OK;
     } else {
         ESP_LOGE(TAG, "WiFi connection failed");

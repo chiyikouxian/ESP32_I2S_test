@@ -133,7 +133,6 @@ static char *generate_auth_url(void)
 
     char date_str[64];
     strftime(date_str, sizeof(date_str), "%a, %d %b %Y %H:%M:%S GMT", &tm_info);
-    ESP_LOGI(TAG, "Auth date: %s", date_str);
 
     /* Step 2: Build signature_origin */
     char signature_origin[256];
@@ -203,7 +202,6 @@ static char *generate_auth_url(void)
     free(auth_encoded);
     free(host_encoded);
 
-    ESP_LOGI(TAG, "Auth URL generated (length=%d)", strlen(url));
     return url;
 }
 
@@ -280,9 +278,6 @@ static void parse_iat_response(const char *json_str)
     /* Check if this is the final result (status == 2) */
     cJSON *status = cJSON_GetObjectItem(data, "status");
     if (status && status->valueint == 2) {
-        ESP_LOGI(TAG, "========================================");
-        ESP_LOGI(TAG, "Recognition result: %s", s_result_text);
-        ESP_LOGI(TAG, "========================================");
         xEventGroupSetBits(s_ws_event_group, WS_FINISHED_BIT);
     }
 
@@ -298,7 +293,6 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
 
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "WebSocket connected to iFlytek");
         xEventGroupSetBits(s_ws_event_group, WS_CONNECTED_BIT);
         break;
 
@@ -317,12 +311,10 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         break;
 
     case WEBSOCKET_EVENT_ERROR:
-        ESP_LOGE(TAG, "WebSocket error");
         xEventGroupSetBits(s_ws_event_group, WS_ERROR_BIT);
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "WebSocket disconnected");
         xEventGroupSetBits(s_ws_event_group, WS_FINISHED_BIT);
         break;
 
@@ -369,7 +361,6 @@ static char *build_first_frame(const unsigned char *audio_data, size_t audio_len
     cJSON_AddStringToObject(business, "domain", "iat");
     cJSON_AddStringToObject(business, "accent", "mandarin");
     cJSON_AddNumberToObject(business, "vad_eos", 3000);
-    cJSON_AddStringToObject(business, "dwa", "wpgs");
     cJSON_AddItemToObject(root, "business", business);
 
     /* data */
@@ -431,7 +422,6 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     }
 
     /* Step 1: Generate authentication URL */
-    ESP_LOGI(TAG, "Generating auth URL...");
     char *url = generate_auth_url();
     if (!url) {
         ESP_LOGE(TAG, "Failed to generate auth URL");
@@ -440,11 +430,13 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     }
 
     /* Step 2: Connect WebSocket */
-    ESP_LOGI(TAG, "Connecting to iFlytek...");
     esp_websocket_client_config_t ws_cfg = {
         .uri = url,
         .buffer_size = 4096,
+        .task_stack = 6144,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        .reconnect_timeout_ms = 10000,
+        .network_timeout_ms = 10000,
     };
 
     esp_websocket_client_handle_t client = esp_websocket_client_init(&ws_cfg);
@@ -509,7 +501,6 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
         /* Check for early termination */
         bits = xEventGroupGetBits(s_ws_event_group);
         if (bits & (WS_FINISHED_BIT | WS_ERROR_BIT)) {
-            ESP_LOGW(TAG, "Session ended early");
             break;
         }
 
@@ -517,7 +508,6 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
         size_t bytes_read = 0;
         ret = inmp441_read(i2s_buffer, i2s_read_size, &bytes_read, 1000);
         if (ret != ESP_OK || bytes_read == 0) {
-            ESP_LOGW(TAG, "Audio read failed, skipping frame");
             vTaskDelay(pdMS_TO_TICKS(IAT_SEND_INTERVAL));
             frame_count++;
             continue;
@@ -534,11 +524,9 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
         if (first_frame) {
             json = build_first_frame((const unsigned char *)pcm_buffer, pcm_bytes);
             first_frame = false;
-            ESP_LOGI(TAG, "Sent first frame (%d bytes PCM)", pcm_bytes);
         } else if (frame_count == total_frames - 1) {
             /* Last frame */
             json = build_audio_frame((const unsigned char *)pcm_buffer, pcm_bytes, IAT_STATUS_LAST);
-            ESP_LOGI(TAG, "Sent last frame");
         } else {
             json = build_audio_frame((const unsigned char *)pcm_buffer, pcm_bytes, IAT_STATUS_CONTINUE);
         }
@@ -570,12 +558,10 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
                 esp_websocket_client_send_text(client, json, strlen(json), pdMS_TO_TICKS(5000));
                 free(json);
             }
-            ESP_LOGI(TAG, "Sent end-of-audio signal");
         }
     }
 
     /* Wait for final result (up to 10 seconds) */
-    ESP_LOGI(TAG, "Waiting for recognition result...");
     xEventGroupWaitBits(s_ws_event_group,
                         WS_FINISHED_BIT | WS_ERROR_BIT,
                         pdFALSE, pdFALSE,
@@ -583,9 +569,7 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
 
     /* Print final result */
     if (strlen(s_result_text) > 0) {
-        printf("\n>>> Recognition result: %s\n\n", s_result_text);
-    } else {
-        ESP_LOGW(TAG, "No speech recognized");
+        printf("Result: %s\n", s_result_text);
     }
 
     /* Cleanup */

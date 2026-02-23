@@ -4,6 +4,7 @@
  */
 
 #include "sntp_sync.h"
+#include <stdlib.h>
 #include <time.h>
 #include "esp_log.h"
 #include "esp_sntp.h"
@@ -12,8 +13,6 @@ static const char *TAG = "SNTP";
 
 esp_err_t sntp_sync_init(void)
 {
-    ESP_LOGI(TAG, "Initializing SNTP...");
-
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "ntp.aliyun.com");
     esp_sntp_setservername(1, "pool.ntp.org");
@@ -23,7 +22,6 @@ esp_err_t sntp_sync_init(void)
     int retry = 0;
     const int max_retry = 30;
     while (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && retry < max_retry) {
-        ESP_LOGI(TAG, "Waiting for time sync... (%d/%d)", retry + 1, max_retry);
         vTaskDelay(pdMS_TO_TICKS(1000));
         retry++;
     }
@@ -36,15 +34,6 @@ esp_err_t sntp_sync_init(void)
     /* Set timezone to China Standard Time (UTC+8) */
     setenv("TZ", "CST-8", 1);
     tzset();
-
-    time_t now;
-    struct tm timeinfo;
-    time(&now);
-    localtime_r(&now, &timeinfo);
-
-    char strftime_buf[64];
-    strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
-    ESP_LOGI(TAG, "Time synchronized: %s", strftime_buf);
 
     return ESP_OK;
 }

@@ -44,15 +44,13 @@ static void speech_task(void *arg)
 
     while (1) {
         session++;
-        ESP_LOGI(TAG, "--- Session %d: Speak now (5 seconds) ---", session);
+        printf("--- Session %d: Speak now ---\n", session);
 
         esp_err_t ret = xfyun_iat_recognize(5);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Recognition failed: %s", esp_err_to_name(ret));
         }
 
-        /* Pause between sessions */
-        ESP_LOGI(TAG, "Next session in 3 seconds...\n");
         vTaskDelay(pdMS_TO_TICKS(3000));
     }
 
@@ -61,34 +59,28 @@ static void speech_task(void *arg)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "ESP32-S3 Speech-to-Text Demo");
-    ESP_LOGI(TAG, "=================================");
-
     /* Step 1: Connect to WiFi */
     esp_err_t ret = wifi_init_sta();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "WiFi connection failed, cannot proceed");
+        ESP_LOGE(TAG, "WiFi failed");
         return;
     }
 
     /* Step 2: Synchronize time via SNTP */
     ret = sntp_sync_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Time sync failed, cannot proceed");
+        ESP_LOGE(TAG, "SNTP failed");
         return;
     }
 
     /* Step 3: Initialize INMP441 microphone */
     inmp441_config_t config = INMP441_DEFAULT_CONFIG();
-
     ret = inmp441_init(&config);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize INMP441: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Mic init failed");
         return;
     }
 
     /* Step 4: Start speech recognition task */
-    ESP_LOGI(TAG, "All initialized. Starting speech recognition...");
     xTaskCreate(speech_task, "speech_task", 8192, NULL, 5, NULL);
 }

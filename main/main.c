@@ -30,6 +30,7 @@
 #include "wifi.h"
 #include "sntp_sync.h"
 #include "xfyun_iat.h"
+#include "result_uart.h"
 
 static const char *TAG = "MAIN";
 
@@ -152,6 +153,13 @@ void app_main(void)
         return;
     }
 
-    /* Step 4: Start speech recognition task */
+    /* Step 4: Initialize result UART output (GPIO17) */
+    ret = result_uart_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "UART init failed");
+        return;
+    }
+
+    /* Step 5: Start speech recognition task */
     xTaskCreate(speech_task, "speech_task", 8192, NULL, 5, NULL);
 }

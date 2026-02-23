@@ -27,6 +27,7 @@
 #include "mbedtls/base64.h"
 #include "cJSON.h"
 #include "inmp441.h"
+#include "result_uart.h"
 
 static const char *TAG = "XFYUN_IAT";
 
@@ -570,6 +571,7 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     /* Print final result */
     if (strlen(s_result_text) > 0) {
         printf("Result: %s\n", s_result_text);
+        result_uart_send(s_result_text);
     }
 
     /* Cleanup */

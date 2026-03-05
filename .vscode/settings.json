@@ -6,7 +6,7 @@
     "interface/ftdi/esp32_devkitj_v1.cfg",
     "target/esp32s3.cfg"
   ],
-  "idf.portWin": "COM10",
+  "idf.portWin": "COM7",
   "idf.toolsPathWin": "C:\\Users\\ideapad15s\\.espressif",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3"

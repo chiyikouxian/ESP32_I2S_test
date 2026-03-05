@@ -31,13 +31,14 @@
 #include "sntp_sync.h"
 #include "xfyun_iat.h"
 #include "result_uart.h"
+#include "battery_adc.h"
 
 static const char *TAG = "MAIN";
 
 /* Voice activity detection threshold (16-bit PCM RMS value).
  * Normal speech typically produces RMS > 500.
  * Adjust based on your environment and microphone gain. */
-#define VAD_RMS_THRESHOLD   500
+#define VAD_RMS_THRESHOLD   2500
 
 /* Number of consecutive frames above threshold to confirm speech */
 #define VAD_CONFIRM_FRAMES  3
@@ -89,6 +90,12 @@ static void wait_for_speech(void)
         size_t count = bytes_read / sizeof(int32_t);
         int32_t rms = compute_rms(buf, count);
 
+        /* Debug: print RMS every ~1 second to help calibrate threshold */
+        static int dbg_cnt = 0;
+        if (++dbg_cnt % 25 == 0) {
+            printf("RMS: %ld\n", (long)rms);
+        }
+
         if (rms >= VAD_RMS_THRESHOLD) {
             confirm_count++;
             if (confirm_count >= VAD_CONFIRM_FRAMES) {
@@ -102,6 +109,22 @@ static void wait_for_speech(void)
     }
 
     free(buf);
+}
+
+/**
+ * @brief Battery voltage monitor task
+ *
+ * Reads battery voltage every 30 seconds and prints it.
+ */
+static void battery_task(void *arg)
+{
+    while (1) {
+        int mv = battery_adc_read_mv();
+        if (mv >= 0) {
+            printf("Battery: %d.%02dV\n", mv / 1000, (mv % 1000) / 10);
+        }
+        vTaskDelay(pdMS_TO_TICKS(30000));
+    }
 }
 
 /**
@@ -153,13 +176,21 @@ void app_main(void)
         return;
     }
 
-    /* Step 4: Initialize result UART output (GPIO17) */
+    /* Step 4: Initialize battery ADC (GPIO7) */
+    ret = battery_adc_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Battery ADC init failed");
+        return;
+    }
+
+    /* Step 5: Initialize result UART output (GPIO17) */
     ret = result_uart_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "UART init failed");
         return;
     }
 
-    /* Step 5: Start speech recognition task */
+    /* Step 6: Start tasks */
     xTaskCreate(speech_task, "speech_task", 8192, NULL, 5, NULL);
+    xTaskCreate(battery_task, "battery_task", 2048, NULL, 3, NULL);
 }

@@ -13,8 +13,8 @@ extern "C" {
 #endif
 
 /* WiFi Configuration */
-#define WIFI_SSID           "CMCC-Vm3m"
-#define WIFI_PASSWORD       "w3wegscf"
+#define WIFI_SSID           "cdut-yb"
+#define WIFI_PASSWORD       "cdutyb218"
 #define WIFI_MAX_RETRY      10
 
 /**

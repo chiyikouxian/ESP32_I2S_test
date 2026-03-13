@@ -2,6 +2,8 @@
  * @file xfyun_iat.c
  * @brief iFlytek IAT (Speech-to-Text) Implementation
  *
+ * Built on RT-Thread RTOS API.
+ *
  * Flow:
  *  1. Generate HMAC-SHA256 authentication URL
  *  2. Connect to iFlytek WebSocket server
@@ -17,9 +19,7 @@
 #include <time.h>
 #include <sys/time.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/event_groups.h"
+#include "rtthread_wrapper.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
@@ -32,11 +32,11 @@
 static const char *TAG = "XFYUN_IAT";
 
 /* Event bits for WebSocket status */
-#define WS_CONNECTED_BIT    BIT0
-#define WS_FINISHED_BIT     BIT1
-#define WS_ERROR_BIT        BIT2
+#define WS_CONNECTED_BIT    (1 << 0)
+#define WS_FINISHED_BIT     (1 << 1)
+#define WS_ERROR_BIT        (1 << 2)
 
-static EventGroupHandle_t s_ws_event_group;
+static rt_event_t s_ws_event = NULL;
 
 /* Buffer to accumulate recognition result */
 static char s_result_text[1024];
@@ -94,11 +94,6 @@ static char *url_encode(const char *str)
 
 /**
  * @brief Compute HMAC-SHA256
- * @param key Secret key
- * @param key_len Key length
- * @param msg Message to sign
- * @param msg_len Message length
- * @param output 32-byte output buffer
  */
 static int hmac_sha256(const unsigned char *key, size_t key_len,
                        const unsigned char *msg, size_t msg_len,
@@ -112,17 +107,6 @@ static int hmac_sha256(const unsigned char *key, size_t key_len,
 
 /**
  * @brief Generate iFlytek authenticated WebSocket URL
- *
- * Steps:
- *  1. Get current UTC time in RFC 1123 format
- *  2. Build signature_origin = "host: ...\ndate: ...\nGET /v2/iat HTTP/1.1"
- *  3. signature_sha = HMAC-SHA256(api_secret, signature_origin)
- *  4. signature = Base64(signature_sha)
- *  5. authorization_origin = 'api_key="...",algorithm="hmac-sha256",headers="host date request-line",signature="..."'
- *  6. authorization = Base64(authorization_origin)
- *  7. URL = wss://host/path?authorization=...&date=...&host=...
- *
- * @return Allocated URL string (caller must free), or NULL on error
  */
 static char *generate_auth_url(void)
 {
@@ -210,19 +194,6 @@ static char *generate_auth_url(void)
 
 /**
  * @brief Parse iFlytek IAT response JSON and extract text
- *
- * Response format:
- * {
- *   "code": 0,
- *   "data": {
- *     "result": {
- *       "ws": [
- *         { "cw": [{ "w": "word" }] }
- *       ]
- *     },
- *     "status": 2  // 2 means final result
- *   }
- * }
  */
 static void parse_iat_response(const char *json_str)
 {
@@ -279,7 +250,7 @@ static void parse_iat_response(const char *json_str)
     /* Check if this is the final result (status == 2) */
     cJSON *status = cJSON_GetObjectItem(data, "status");
     if (status && status->valueint == 2) {
-        xEventGroupSetBits(s_ws_event_group, WS_FINISHED_BIT);
+        rt_event_send(s_ws_event, WS_FINISHED_BIT);
     }
 
     cJSON_Delete(root);
@@ -294,7 +265,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
 
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
-        xEventGroupSetBits(s_ws_event_group, WS_CONNECTED_BIT);
+        rt_event_send(s_ws_event, WS_CONNECTED_BIT);
         break;
 
     case WEBSOCKET_EVENT_DATA:
@@ -312,11 +283,11 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         break;
 
     case WEBSOCKET_EVENT_ERROR:
-        xEventGroupSetBits(s_ws_event_group, WS_ERROR_BIT);
+        rt_event_send(s_ws_event, WS_ERROR_BIT);
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
-        xEventGroupSetBits(s_ws_event_group, WS_FINISHED_BIT);
+        rt_event_send(s_ws_event, WS_FINISHED_BIT);
         break;
 
     default:
@@ -328,9 +299,6 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
 
 /**
  * @brief Convert INMP441 32-bit samples to 16-bit PCM
- *
- * INMP441 outputs 24-bit data MSB-aligned in 32-bit frame.
- * We shift right by 16 to get the top 16 bits as int16_t.
  */
 static void convert_32bit_to_16bit(const int32_t *src, int16_t *dst, size_t sample_count)
 {
@@ -365,12 +333,12 @@ static char *build_first_frame(const unsigned char *audio_data, size_t audio_len
     cJSON_AddItemToObject(root, "business", business);
 
     /* data */
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddNumberToObject(data, "status", IAT_STATUS_FIRST);
-    cJSON_AddStringToObject(data, "format", "audio/L16;rate=16000");
-    cJSON_AddStringToObject(data, "encoding", "raw");
-    cJSON_AddStringToObject(data, "audio", audio_b64);
-    cJSON_AddItemToObject(root, "data", data);
+    cJSON *data_obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data_obj, "status", IAT_STATUS_FIRST);
+    cJSON_AddStringToObject(data_obj, "format", "audio/L16;rate=16000");
+    cJSON_AddStringToObject(data_obj, "encoding", "raw");
+    cJSON_AddStringToObject(data_obj, "audio", audio_b64);
+    cJSON_AddItemToObject(root, "data", data_obj);
 
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -389,12 +357,12 @@ static char *build_audio_frame(const unsigned char *audio_data, size_t audio_len
 
     cJSON *root = cJSON_CreateObject();
 
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddNumberToObject(data, "status", status);
-    cJSON_AddStringToObject(data, "format", "audio/L16;rate=16000");
-    cJSON_AddStringToObject(data, "encoding", "raw");
-    cJSON_AddStringToObject(data, "audio", audio_b64);
-    cJSON_AddItemToObject(root, "data", data);
+    cJSON *data_obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data_obj, "status", status);
+    cJSON_AddStringToObject(data_obj, "format", "audio/L16;rate=16000");
+    cJSON_AddStringToObject(data_obj, "encoding", "raw");
+    cJSON_AddStringToObject(data_obj, "audio", audio_b64);
+    cJSON_AddItemToObject(root, "data", data_obj);
 
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -415,10 +383,10 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     /* Clear result buffer */
     memset(s_result_text, 0, sizeof(s_result_text));
 
-    /* Create event group */
-    s_ws_event_group = xEventGroupCreate();
-    if (!s_ws_event_group) {
-        ESP_LOGE(TAG, "Failed to create event group");
+    /* Create RT-Thread event */
+    s_ws_event = rt_event_create("ws_evt", 0);
+    if (!s_ws_event) {
+        ESP_LOGE(TAG, "Failed to create event");
         return ESP_ERR_NO_MEM;
     }
 
@@ -426,7 +394,7 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     char *url = generate_auth_url();
     if (!url) {
         ESP_LOGE(TAG, "Failed to generate auth URL");
-        vEventGroupDelete(s_ws_event_group);
+        rt_event_delete(s_ws_event);
         return ESP_FAIL;
     }
 
@@ -444,7 +412,7 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     if (!client) {
         ESP_LOGE(TAG, "WebSocket client init failed");
         free(url);
-        vEventGroupDelete(s_ws_event_group);
+        rt_event_delete(s_ws_event);
         return ESP_FAIL;
     }
 
@@ -455,20 +423,22 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "WebSocket start failed: %s", esp_err_to_name(ret));
         esp_websocket_client_destroy(client);
-        vEventGroupDelete(s_ws_event_group);
+        rt_event_delete(s_ws_event);
         return ret;
     }
 
     /* Wait for connection */
-    EventBits_t bits = xEventGroupWaitBits(s_ws_event_group,
-                                           WS_CONNECTED_BIT | WS_ERROR_BIT,
-                                           pdFALSE, pdFALSE,
-                                           pdMS_TO_TICKS(10000));
-    if (!(bits & WS_CONNECTED_BIT)) {
+    rt_uint32_t recved = 0;
+    rt_err_t err = rt_event_recv(s_ws_event,
+                                 WS_CONNECTED_BIT | WS_ERROR_BIT,
+                                 RT_EVENT_FLAG_OR,
+                                 10000,
+                                 &recved);
+    if (err != RT_EOK || !(recved & WS_CONNECTED_BIT)) {
         ESP_LOGE(TAG, "WebSocket connection timeout");
         esp_websocket_client_stop(client);
         esp_websocket_client_destroy(client);
-        vEventGroupDelete(s_ws_event_group);
+        rt_event_delete(s_ws_event);
         return ESP_ERR_TIMEOUT;
     }
 
@@ -476,8 +446,6 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     ESP_LOGI(TAG, "Recording for %d seconds... Speak now!", record_seconds);
 
     /* Allocate buffers */
-    /* Read 640 16-bit samples = 1280 bytes of 16-bit PCM (= IAT_FRAME_SIZE) */
-    /* That's 640 32-bit samples from I2S = 2560 bytes */
     const size_t samples_per_frame = IAT_FRAME_SIZE / sizeof(int16_t);  /* 640 */
     const size_t i2s_read_size = samples_per_frame * sizeof(int32_t);   /* 2560 */
 
@@ -490,7 +458,7 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
         free(pcm_buffer);
         esp_websocket_client_stop(client);
         esp_websocket_client_destroy(client);
-        vEventGroupDelete(s_ws_event_group);
+        rt_event_delete(s_ws_event);
         return ESP_ERR_NO_MEM;
     }
 
@@ -499,9 +467,11 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     bool first_frame = true;
 
     while (frame_count < total_frames) {
-        /* Check for early termination */
-        bits = xEventGroupGetBits(s_ws_event_group);
-        if (bits & (WS_FINISHED_BIT | WS_ERROR_BIT)) {
+        /* Check for early termination (non-blocking) */
+        recved = 0;
+        rt_event_recv(s_ws_event, WS_FINISHED_BIT | WS_ERROR_BIT,
+                      RT_EVENT_FLAG_OR, 0, &recved);
+        if (recved & (WS_FINISHED_BIT | WS_ERROR_BIT)) {
             break;
         }
 
@@ -509,7 +479,7 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
         size_t bytes_read = 0;
         ret = inmp441_read(i2s_buffer, i2s_read_size, &bytes_read, 1000);
         if (ret != ESP_OK || bytes_read == 0) {
-            vTaskDelay(pdMS_TO_TICKS(IAT_SEND_INTERVAL));
+            rt_thread_mdelay(IAT_SEND_INTERVAL);
             frame_count++;
             continue;
         }
@@ -534,7 +504,8 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
 
         if (json) {
             if (esp_websocket_client_is_connected(client)) {
-                esp_websocket_client_send_text(client, json, strlen(json), pdMS_TO_TICKS(5000));
+                esp_websocket_client_send_text(client, json, strlen(json),
+                                               rt_tick_from_millisecond(5000));
             }
             free(json);
         }
@@ -547,30 +518,35 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
                      frame_count * IAT_SEND_INTERVAL / 1000, record_seconds);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(IAT_SEND_INTERVAL));
+        rt_thread_mdelay(IAT_SEND_INTERVAL);
     }
 
     /* If we haven't sent the last frame yet, send it now */
-    if (!(xEventGroupGetBits(s_ws_event_group) & (WS_FINISHED_BIT | WS_ERROR_BIT))) {
+    recved = 0;
+    rt_event_recv(s_ws_event, WS_FINISHED_BIT | WS_ERROR_BIT,
+                  RT_EVENT_FLAG_OR, 0, &recved);
+    if (!(recved & (WS_FINISHED_BIT | WS_ERROR_BIT))) {
         if (!first_frame) {
             /* Send empty last frame to signal end */
             char *json = build_audio_frame((const unsigned char *)"", 0, IAT_STATUS_LAST);
             if (json && esp_websocket_client_is_connected(client)) {
-                esp_websocket_client_send_text(client, json, strlen(json), pdMS_TO_TICKS(5000));
+                esp_websocket_client_send_text(client, json, strlen(json),
+                                               rt_tick_from_millisecond(5000));
                 free(json);
             }
         }
     }
 
     /* Wait for final result (up to 10 seconds) */
-    xEventGroupWaitBits(s_ws_event_group,
-                        WS_FINISHED_BIT | WS_ERROR_BIT,
-                        pdFALSE, pdFALSE,
-                        pdMS_TO_TICKS(10000));
+    rt_event_recv(s_ws_event,
+                  WS_FINISHED_BIT | WS_ERROR_BIT,
+                  RT_EVENT_FLAG_OR,
+                  10000,
+                  NULL);
 
     /* Print final result */
     if (strlen(s_result_text) > 0) {
-        printf("Result: %s\n", s_result_text);
+        rt_kprintf("Result: %s\n", s_result_text);
         result_uart_send(s_result_text);
     }
 
@@ -579,7 +555,7 @@ esp_err_t xfyun_iat_recognize(int record_seconds)
     free(pcm_buffer);
     esp_websocket_client_stop(client);
     esp_websocket_client_destroy(client);
-    vEventGroupDelete(s_ws_event_group);
+    rt_event_delete(s_ws_event);
 
     return ESP_OK;
 }

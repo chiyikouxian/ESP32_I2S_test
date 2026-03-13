@@ -6,6 +6,7 @@
 #include "sntp_sync.h"
 #include <stdlib.h>
 #include <time.h>
+#include "rtthread_wrapper.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
 
@@ -22,7 +23,7 @@ esp_err_t sntp_sync_init(void)
     int retry = 0;
     const int max_retry = 30;
     while (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && retry < max_retry) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        rt_thread_mdelay(1000);
         retry++;
     }
 

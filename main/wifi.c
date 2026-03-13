@@ -1,12 +1,13 @@
 /**
  * @file wifi.c
  * @brief WiFi Station Mode Connection Implementation
+ *
+ * Uses RT-Thread event API for synchronization.
  */
 
 #include "wifi.h"
 #include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
+#include "rtthread_wrapper.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
 #include "esp_event.h"
@@ -14,11 +15,11 @@
 
 static const char *TAG = "WIFI";
 
-/* FreeRTOS event group to signal WiFi connection status */
-static EventGroupHandle_t s_wifi_event_group;
+/* RT-Thread event object for WiFi connection status */
+static rt_event_t s_wifi_event = NULL;
 
-#define WIFI_CONNECTED_BIT  BIT0
-#define WIFI_FAIL_BIT       BIT1
+#define WIFI_CONNECTED_BIT  (1 << 0)
+#define WIFI_FAIL_BIT       (1 << 1)
 
 static int s_retry_num = 0;
 
@@ -32,12 +33,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             esp_wifi_connect();
             s_retry_num++;
         } else {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            rt_event_send(s_wifi_event, WIFI_FAIL_BIT);
             ESP_LOGE(TAG, "Failed to connect after %d retries", WIFI_MAX_RETRY);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_retry_num = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        rt_event_send(s_wifi_event, WIFI_CONNECTED_BIT);
     }
 }
 
@@ -56,7 +57,7 @@ esp_err_t wifi_init_sta(void)
         return ret;
     }
 
-    s_wifi_event_group = xEventGroupCreate();
+    s_wifi_event = rt_event_create("wifi_evt", 0);
 
     /* Initialize TCP/IP stack and event loop */
     ESP_ERROR_CHECK(esp_netif_init());
@@ -90,11 +91,14 @@ esp_err_t wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     /* Wait for connection result */
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE, pdFALSE, portMAX_DELAY);
+    rt_uint32_t recved = 0;
+    rt_event_recv(s_wifi_event,
+                  WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                  RT_EVENT_FLAG_OR,
+                  RT_WAITING_FOREVER,
+                  &recved);
 
-    if (bits & WIFI_CONNECTED_BIT) {
+    if (recved & WIFI_CONNECTED_BIT) {
         return ESP_OK;
     } else {
         ESP_LOGE(TAG, "WiFi connection failed");

@@ -2,6 +2,8 @@
  * @file main.c
  * @brief ESP32-S3 Speech-to-Text Demo using INMP441 + iFlytek IAT
  *
+ * Built on RT-Thread RTOS API.
+ *
  * Flow:
  *   1. Connect to WiFi
  *   2. Synchronize time via SNTP (needed for iFlytek auth)
@@ -23,8 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "rtthread_wrapper.h"
 #include "esp_log.h"
 #include "inmp441.h"
 #include "wifi.h"
@@ -66,7 +67,7 @@ static int32_t compute_rms(const int32_t *samples, size_t count)
  * @brief Wait for voice activity before starting recognition
  *
  * Continuously reads mic data and computes RMS.
- * Returns true once VAD_CONFIRM_FRAMES consecutive frames
+ * Returns once VAD_CONFIRM_FRAMES consecutive frames
  * exceed VAD_RMS_THRESHOLD.
  */
 static void wait_for_speech(void)
@@ -83,7 +84,7 @@ static void wait_for_speech(void)
         size_t bytes_read = 0;
         esp_err_t ret = inmp441_read(buf, i2s_read_size, &bytes_read, 1000);
         if (ret != ESP_OK || bytes_read == 0) {
-            vTaskDelay(pdMS_TO_TICKS(20));
+            rt_thread_mdelay(20);
             continue;
         }
 
@@ -93,7 +94,7 @@ static void wait_for_speech(void)
         /* Debug: print RMS every ~1 second to help calibrate threshold */
         static int dbg_cnt = 0;
         if (++dbg_cnt % 25 == 0) {
-            printf("RMS: %ld\n", (long)rms);
+            rt_kprintf("RMS: %ld\n", (long)rms);
         }
 
         if (rms >= VAD_RMS_THRESHOLD) {
@@ -105,51 +106,49 @@ static void wait_for_speech(void)
             confirm_count = 0;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(IAT_SEND_INTERVAL));
+        rt_thread_mdelay(IAT_SEND_INTERVAL);
     }
 
     free(buf);
 }
 
 /**
- * @brief Battery voltage monitor task
+ * @brief Battery voltage monitor thread entry
  *
  * Reads battery voltage every 30 seconds and prints it.
  */
-static void battery_task(void *arg)
+static void battery_thread_entry(void *arg)
 {
     while (1) {
         int mv = battery_adc_read_mv();
         if (mv >= 0) {
-            printf("Battery: %d.%02dV\n", mv / 1000, (mv % 1000) / 10);
+            rt_kprintf("Battery: %d.%02dV\n", mv / 1000, (mv % 1000) / 10);
         }
-        vTaskDelay(pdMS_TO_TICKS(30000));
+        rt_thread_mdelay(30000);
     }
 }
 
 /**
- * @brief Speech recognition task
+ * @brief Speech recognition thread entry
  *
  * Waits for voice activity, then performs 5-second recording sessions.
  */
-static void speech_task(void *arg)
+static void speech_thread_entry(void *arg)
 {
     int session = 0;
 
     while (1) {
-        printf("Listening...\n");
+        rt_kprintf("Listening...\n");
         wait_for_speech();
 
         session++;
-        printf("--- Session %d: Recording ---\n", session);
+        rt_kprintf("--- Session %d: Recording ---\n", session);
 
         esp_err_t ret = xfyun_iat_recognize(5);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Recognition failed: %s", esp_err_to_name(ret));
         }
     }
-
-    vTaskDelete(NULL);
 }
 
 void app_main(void)
@@ -190,7 +189,10 @@ void app_main(void)
         return;
     }
 
-    /* Step 6: Start tasks */
-    xTaskCreate(speech_task, "speech_task", 8192, NULL, 5, NULL);
-    xTaskCreate(battery_task, "battery_task", 2048, NULL, 3, NULL);
+    /* Step 6: Create and start RT-Thread threads */
+    rt_thread_t speech_tid = rt_thread_create("speech", speech_thread_entry, NULL, 8192, 5, 0);
+    if (speech_tid) rt_thread_startup(speech_tid);
+
+    rt_thread_t battery_tid = rt_thread_create("battery", battery_thread_entry, NULL, 2048, 3, 0);
+    if (battery_tid) rt_thread_startup(battery_tid);
 }
